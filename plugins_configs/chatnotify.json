@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "server": "https://ntfy.sh",
+  "topic": "CHANGE-ME-to-a-long-random-name",
+  "token": "",
+  "title": "FM-DX Chat",
+  "priority": 3,
+  "tags": "radio",
+  "ignoreAdmins": false,
+  "maxPerMinute": 10
+}
