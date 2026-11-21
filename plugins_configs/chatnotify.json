@@ -7,5 +7,6 @@
   "priority": 3,
   "tags": "radio",
   "ignoreAdmins": false,
-  "maxPerMinute": 10
+  "maxPerMinute": 10,
+  "maxPerDay": 100
 }

@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////////////
 ///                                                                        ///
-///  CHAT NOTIFY SERVER PLUGIN FOR FM-DX-WEBSERVER (V1.0)                  ///
+///  CHAT NOTIFY SERVER PLUGIN FOR FM-DX-WEBSERVER (V1.1)                  ///
 ///                                                                        ///
 ///  Sends every published chat message to an ntfy topic (push to phone).  ///
 ///  It listens to the chat like an invisible visitor: no change to        ///
@@ -33,7 +33,9 @@ const DEFAULT_CONFIG = {
     priority: 3,                  // 1 (min) .. 5 (max)
     tags: 'radio',
     ignoreAdmins: false,          // true: do not notify messages sent by a logged-in admin
-    maxPerMinute: 10              // flood guard: extra messages are summarised in one notification
+    maxPerMinute: 10,             // flood guard: extra messages are summarised in one notification
+    maxPerDay: 100                // daily budget (rolling 24 h): keeps ntfy.sh's per-IP quota
+                                  // (250/day without account) free for other alerts on the same IP
 };
 
 function loadConfig() {
@@ -90,22 +92,62 @@ function publish(message) {
     req.end(body);
 }
 
-// ─── Flood guard ────────────────────────────────────────────────────────────
+// ─── Flood guard (per minute) and daily budget (rolling 24 h) ───────────────
 
-let sentTimes = [];
-let dropped = 0;
+const DAY_MS = 24 * 3600 * 1000;
+const STATE_PATH = path.resolve(__dirname, '../../plugins_configs/chatnotify-state.json');
+
+let sentTimes = [];      // last minute
+let dropped = 0;         // over the per-minute limit, summarised every minute
+let dayTimes = [];       // every notification of the last 24 h (saved, survives restarts)
+let budgetNoticeSent = false;
+
+try {
+    const saved = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
+    dayTimes = (saved.dayTimes || []).filter(t => Date.now() - t < DAY_MS);
+    budgetNoticeSent = !!saved.budgetNoticeSent && dayTimes.length >= config.maxPerDay;
+} catch (e) { /* first run */ }
+
+function saveState() {
+    try { fs.writeFileSync(STATE_PATH, JSON.stringify({ dayTimes, budgetNoticeSent })); } catch (e) { /* ignore */ }
+}
+
+// Sends if the daily budget allows it. The last slot of the budget is kept for the
+// "budget reached" notice, so the phone always learns why notifications stopped.
+function sendWithinBudget(text) {
+    const now = Date.now();
+    dayTimes = dayTimes.filter(t => now - t < DAY_MS);
+    if (dayTimes.length < config.maxPerDay - 1) {
+        budgetNoticeSent = false;
+        dayTimes.push(now);
+        saveState();
+        publish(text);
+        return true;
+    }
+    if (!budgetNoticeSent) {
+        budgetNoticeSent = true;
+        dayTimes.push(now);
+        saveState();
+        const back = new Date(dayTimes[0] + DAY_MS);
+        const p = n => String(n).padStart(2, '0');
+        publish(`Daily budget of ${config.maxPerDay} chat notifications reached: paused until about ` +
+            `${p(back.getDate())}/${p(back.getMonth() + 1)} ${p(back.getHours())}:${p(back.getMinutes())}. Check the chat directly.`);
+        logWarn(`${TAG} Daily budget of ${config.maxPerDay} notifications reached, notifications paused`);
+    }
+    return false;
+}
 
 function notify(text) {
     const now = Date.now();
     sentTimes = sentTimes.filter(t => now - t < 60000);
     if (sentTimes.length >= config.maxPerMinute) { dropped++; return; }
     sentTimes.push(now);
-    publish(text);
+    sendWithinBudget(text);
 }
 
 setInterval(() => {
     if (!dropped) return;
-    publish(`… and ${dropped} more chat message(s) in the last minute (flood guard).`);
+    sendWithinBudget(`… and ${dropped} more chat message(s) in the last minute (flood guard).`);
     logWarn(`${TAG} Flood guard: ${dropped} message(s) not notified`);
     dropped = 0;
 }, 60000).unref();
@@ -153,5 +195,5 @@ if (!config.enabled) {
     logWarn(`${TAG} No "topic" set in ${CONFIG_PATH}: nothing will be sent.`);
 } else {
     setTimeout(connect, 3000);   // let the web server finish starting
-    logInfo(`${TAG} Server plugin initialized (v1.0)`);
+    logInfo(`${TAG} Server plugin initialized (v1.1), ${dayTimes.length}/${config.maxPerDay} notifications used in the last 24 h`);
 }
